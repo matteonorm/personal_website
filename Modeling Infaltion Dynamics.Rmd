@@ -1,0 +1,422 @@
+---
+title: "**Econometrics Group Work - Part II**"
+output:
+  pdf_document:
+    latex_engine: xelatex
+author: "Modeling Inflation Dynamics"
+date: "Normanno M.A."
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center',out.width='75%')
+
+# Set CRAN mirror
+options(repos = c(CRAN = "https://cran.rstudio.com"))
+
+library(ggplot2)
+library(tidyverse)
+library(readr)
+library(scales)
+library(lubridate)
+library(tseries)
+library(magrittr)
+library(dlm)
+library(stringr)
+library(dplyr)
+library(kableExtra)
+library(gtable)
+library(strucchange)
+library(quantmod)
+library(Quandl)
+library(dplyr)
+library(ggplot2)
+library(psych)
+library(zoo)
+library(ggcorrplot)
+library(lmtest)
+library(vars)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='60%'}
+
+Quandl.api_key("fcUXncG_S7ZRojtMdYnv")
+
+# US CPI
+CPI_USA <- Quandl("FRED/CPIAUCNS", start_date = "1960-01-01", end_date = "2005-12-31")
+CPI_USA$Value <- rev(CPI_USA$Value)
+CPI_USA$Date <- rev(CPI_USA$Date)
+
+# US GDP Deflator
+GDP_DEF_USA <- Quandl("FRED/GDPDEF", start_date = "1960-01-01", end_date = "2005-12-31")
+GDP_DEF_USA$Value <- rev(GDP_DEF_USA$Value)
+GDP_DEF_USA$Date <- rev(GDP_DEF_USA$Date)
+
+# US GDP
+GDP <- Quandl("FRED/GDP", start_date = "1960-01-01", end_date = "2005-12-31")
+GDP$Value <- rev(GDP$Value)
+GDP$Date <- rev(GDP$Date)
+
+# US Employment Rate
+UNRATE <- Quandl("FRED/UNRATE", start_date = "1960-01-01", end_date = "2005-12-31")
+UNRATE$Value <- rev(UNRATE$Value)
+UNRATE$Date <- rev(UNRATE$Date)
+
+# Convert the Date column to a proper date format
+CPI_USA$Date <- as.Date(CPI_USA$Date)
+GDP_DEF_USA$Date <- as.Date(GDP_DEF_USA$Date)
+GDP$Date <- as.Date(GDP$Date)
+UNRATE$Date <- as.Date(UNRATE$Date)
+
+# Calculate growth rates using the zoo package
+CPI_USA$Growth_Rate <- c(NA, (CPI_USA$Value[-1] / lag(CPI_USA$Value, default = NA)[-1] - 1) * 100)
+
+GDP_DEF_USA$Growth_Rate <- c(NA, (GDP_DEF_USA$Value[-1] / lag(GDP_DEF_USA$Value, default = NA)[-1] - 1) * 100)
+
+GDP$Growth_Rate <- c(NA, (GDP$Value[-1] / lag(GDP$Value, default = NA)[-1] - 1) * 100)
+
+UNRATE$Growth_Rate <- c(NA, (UNRATE$Value[-1] / lag(UNRATE$Value, default = NA)[-1] - 1) * 100)
+
+# Summary statistics
+summary_data <- data.frame(
+  Variable = c("US CPI Growth Rate", "US GDP Deflator Growth Rate", "US GDP Growth Rate", "US Employment Rate Growth Rate"),
+  Mean = c(mean(CPI_USA$Growth_Rate, na.rm = TRUE), mean(GDP_DEF_USA$Growth_Rate, na.rm = TRUE), mean(GDP$Growth_Rate, na.rm = TRUE), mean(UNRATE$Growth_Rate, na.rm = TRUE)),
+  Median = c(median(CPI_USA$Growth_Rate, na.rm = TRUE), median(GDP_DEF_USA$Growth_Rate, na.rm = TRUE), median(GDP$Growth_Rate, na.rm = TRUE), median(UNRATE$Growth_Rate, na.rm = TRUE)),
+  SD = c(sd(CPI_USA$Growth_Rate, na.rm = TRUE), sd(GDP_DEF_USA$Growth_Rate, na.rm = TRUE), sd(GDP$Growth_Rate, na.rm = TRUE), sd(UNRATE$Growth_Rate, na.rm = TRUE))
+)
+
+# Qualitative Descriptive Analysis
+# Frequency table for categorical variables (if applicable)
+# No categorical variables are mentioned in the question.
+
+# Line plots for continuous variables (growth rates)
+ggplot(data = CPI_USA, aes(x = Date, y = Growth_Rate)) +
+  geom_line(color = "blue") +
+  labs(title = "US CPI Growth Rate Line Plot", x = "Date", y = "US CPI Growth Rate")
+
+ggplot(data = GDP_DEF_USA, aes(x = Date, y = Growth_Rate)) +
+  geom_line(color = "blue") +
+  labs(title = "US GDP Deflator Growth Rate Line Plot", x = "Date", y = "US GDP Deflator Growth Rate")
+
+ggplot(data = GDP, aes(x = Date, y = Growth_Rate)) +
+  geom_line(color = "blue") +
+  labs(title = "US GDP Growth Rate Line Plot", x = "Date", y = "US GDP Growth Rate")
+
+ggplot(data = UNRATE, aes(x = Date, y = Growth_Rate)) +
+  geom_line(color = "blue") +
+  labs(title = "US Employment Rate Growth Rate Line Plot", x = "Date", y = "US Employment Rate Growth Rate")
+
+# Correlation matrix
+data <- data.frame(CPI_USA$Growth_Rate, GDP_DEF_USA$Growth_Rate, GDP$Growth_Rate, UNRATE$Growth_Rate)
+cor_matrix <- cor(data, use = "pairwise.complete.obs")
+
+# Print the summary statistics and correlation matrix
+print(summary_data)
+print(cor_matrix)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='60%'}
+# Calculate yearly moving average of the inflation rate
+CPI_USA$Moving_Average <- rollmeanr(CPI_USA$Growth_Rate, k = 12, fill = NA)
+
+# Line plot with yearly moving average
+ggplot(data = CPI_USA, aes(x = Date)) +
+  geom_line(aes(y = Growth_Rate), color = "blue", linetype = "solid") +
+  geom_line(aes(y = Moving_Average), color = "red", linetype = "dashed") +
+  labs(title = "US CPI Growth Rate with Yearly Moving Average", x = "Date", y = "US CPI Growth Rate") +
+  theme_minimal()
+
+# Correlogram
+data <- data.frame(CPI_USA$Growth_Rate, GDP_DEF_USA$Growth_Rate, GDP$Growth_Rate, UNRATE$Growth_Rate)
+cor_matrix <- cor(data, use = "pairwise.complete.obs")
+
+# Plotting the correlogram using ggcorrplot
+ggcorrplot(cor_matrix, type = "lower", lab = TRUE)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='60%'}
+# Calculate partial adjustment model
+
+library(dplyr)
+
+# Calculate lagged variables
+CPI_USA$Growth_Rate_Lag <- lag(CPI_USA$Growth_Rate)
+
+# Calculate target inflation growth rate
+target_inflation <- 1.5
+
+# Calculate adjusted inflation growth rate
+CPI_USA$Adjusted_Growth_Rate <- CPI_USA$Growth_Rate - CPI_USA$Growth_Rate_Lag
+CPI_USA$Adjusted_Growth_Rate_Lag <- lag(CPI_USA$Adjusted_Growth_Rate)
+CPI_USA$Gamma <- CPI_USA$Adjusted_Growth_Rate / (target_inflation - CPI_USA$Growth_Rate_Lag)
+
+# Subset data to remove NAs
+CPI_USA <- CPI_USA[complete.cases(CPI_USA), ]
+
+# Filter GDP dataset to align with CPI_USA dates
+GDP_filtered <- filter(GDP, Date %in% CPI_USA$Date)
+CPI_USA_filtered <- filter(CPI_USA, Date %in% GDP_filtered$Date)
+
+# Run regression
+regression_result <- lm(Growth_Rate ~ Gamma + Gamma * GDP_filtered$Growth_Rate + Gamma * CPI_USA_filtered$Growth_Rate_Lag - Gamma, data = CPI_USA_filtered)
+
+# Print the regression summary
+summary(regression_result)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='60%'}
+#VAR (Vector Autoregression) model
+
+library(vars)
+
+# Create a data frame with the variables of interest
+data <- data.frame(
+  GDP_Growth = GDP_filtered$Growth_Rate,
+  Inflation_Growth = CPI_USA_filtered$Growth_Rate
+)
+
+# Estimate the VAR model
+var_model <- VAR(data, p = 1, type = "const")
+
+# Summary of the VAR model
+summary(var_model)
+
+# Get the estimated coefficients
+coefficients <- coefficients(var_model)
+
+# Access the estimated coefficients for the equations of interest
+beta <- coefficients(var_model)$GDP_Growth[1]
+alfa <- coefficients(var_model)$Inflation_Growth[2]
+beta2 <- coefficients(var_model)$Inflation_Growth[1]
+alfa2 <- coefficients(var_model)$GDP_Growth[2]
+
+# Create a data frame with the coefficients
+coefficients_table <- data.frame(
+  Equation = c("Current Inflation Growth Rate", "Current GDP Growth Rate"),
+  Beta = c(beta, beta2),
+  Alpha = c(alfa, alfa2)
+)
+
+# Print the coefficients table
+print(coefficients_table)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='60%'}
+# Assuming you have already run the partial adjustment model using the code provided, here are the diagnostic checks:
+
+# 1. Residual Analysis
+# Check the residuals for autocorrelation using Durbin-Watson test
+dwtest(regression_result)
+
+# Plot the residuals against time to check for patterns or trends
+plot(residuals(regression_result), type = "l", main = "Residuals of Partial Adjustment Model", ylab = "Residuals")
+
+# 2. Heteroscedasticity Test
+# Check for heteroscedasticity using Breusch-Pagan test
+bptest(regression_result)
+
+# 3. Normality of Residuals
+# Check the normality of residuals using Shapiro-Wilk test
+shapiro.test(residuals(regression_result))
+
+# 4. Influence and Outliers
+# Check for influential observations and outliers using Cook's distance
+plot(cooks.distance(regression_result), type = "h", main = "Cook's Distance Plot")
+abline(h = 4/nrow(CPI_USA_filtered), col = "red", lty = 2)
+
+# You can also check leverage and influence using influenceIndexPlot and influencePlot functions from the 'car' package
+
+# 5. Model Fit
+# Evaluate the overall model fit using R-squared, adjusted R-squared, and AIC/BIC
+summary(regression_result)
+
+# Assuming you have already run the VAR model using the code provided, here are the diagnostic checks:
+
+# 1. Residual Analysis
+# Check the residuals for autocorrelation using Ljung-Box test
+# Extract the residuals from the VAR model and convert to a vector
+var_residuals <- as.vector(residuals(var_model))
+
+# Apply Ljung-Box test on the residuals
+Box.test(var_residuals, lag = 10, type = "Ljung-Box")
+
+# Plot the residuals against time to check for patterns or trends
+plot(fitted(var_model), residuals(var_model), main = "Residuals vs. Fitted Values", xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red")  # Add a horizontal line at y = 0 for reference
+
+
+# 2. Heteroscedasticity Test 
+
+library(sandwich)
+
+# Extract the residuals from the VAR model
+var_residuals <- residuals(var_model)
+
+# Compute the heteroscedasticity-robust covariance matrix
+var_cov <- vcovHC(var_model, type = "HC1")
+
+# Apply the heteroscedasticity test using the White test
+het_test_result <- coeftest(var_model, var_cov)
+
+# Print the heteroscedasticity test results
+print(het_test_result)
+
+# 3. Normality of Residuals
+# Check the normality of residuals using Shapiro-Wilk test
+shapiro.test(residuals(var_model))
+
+# 4. Granger Causality Test
+# Test for Granger causality between variables in the VAR model
+causality(var_model)
+
+# 5. Model Fit
+# Evaluate the overall model fit using log-likelihood, AIC, and BIC
+summary(var_model)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='60%'}
+#AR(1)
+
+#Run AR(1) model
+ar_model <- arima(CPI_USA_filtered$Growth_Rate, order = c(1, 0, 0))
+
+# Get the estimated coefficient (alpha)
+alpha <- ar_model$coef[2]
+
+# Print the estimated coefficient
+print(alpha)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='60%'}
+# Merge CPI_USA_filtered and GDP datasets
+merged_data <- merge(CPI_USA_filtered, GDP_filtered, by = "Date")
+
+# Create lagged variables
+lags <- 1
+merged_data <- cbind(merged_data, dplyr::lag(merged_data$Growth_Rate.x, n = lags), dplyr::lag(merged_data$Growth_Rate.y, n = lags))
+colnames(merged_data)[11:12] <- c("Growth_Rate.x_Lag", "Growth_Rate.y_Lag")
+
+# Subset the data to keep only the necessary columns
+var_data <- merged_data[, c("Growth_Rate.x", "Growth_Rate.y", "Growth_Rate.x_Lag", "Growth_Rate.y_Lag")]
+
+# Remove rows with missing values
+var_data <- na.omit(var_data)
+
+# Fit the VAR model
+var_model <- VAR(var_data, p = lags)
+
+# Extract the VAR model coefficients
+var_coeffs <- coef(var_model)
+
+# Specify the number of forecast periods
+forecast_periods <- 5
+
+# Create an empty matrix to store the forecasts
+forecast_matrix <- matrix(NA, nrow = forecast_periods, ncol = 2)
+
+# Iterate over each forecast period
+for (i in 1:forecast_periods) {
+  # Extract the lagged variables from the last observation in the dataset
+  last_observation <- tail(var_data, 1)
+  lagged_inflation <- last_observation$Growth_Rate.x_Lag
+  lagged_gdp <- last_observation$Growth_Rate.y_Lag
+  
+  # Compute the 1-step ahead forecasts for inflation growth rate and GDP growth rate
+  var_inflation_forecast <- var_coeffs$Growth_Rate.x[1] + var_coeffs$Growth_Rate.x_Lag[1] * lagged_inflation + var_coeffs$Growth_Rate.y_Lag[1] * lagged_gdp
+  var_gdp_forecast <- var_coeffs$Growth_Rate.y[1] + var_coeffs$Growth_Rate.x_Lag[2] * lagged_inflation + var_coeffs$Growth_Rate.y_Lag[2] * lagged_gdp
+  
+  # Store the forecasts in the forecast matrix
+  forecast_matrix[i, 1] <- var_inflation_forecast
+  forecast_matrix[i, 2] <- var_gdp_forecast
+  
+  # Update the lagged variables for the next forecast iteration
+  lagged_inflation <- var_inflation_forecast
+  lagged_gdp <- var_gdp_forecast
+  
+  # Create a new row in the dataset with the updated lagged variables
+  new_row <- c(NA, NA, lagged_inflation, lagged_gdp)
+  var_data <- rbind(var_data, new_row)
+}
+
+# Print the 1-step ahead forecasts
+cat("1-Step Ahead Forecasts for Inflation Growth Rate:\n")
+print(forecast_matrix[, 1])
+cat("\n1-Step Ahead Forecasts for GDP Growth Rate:\n")
+print(forecast_matrix[, 2])
+
+# Partial Adjustment Model Forecasting
+
+# Subset the data for the last 5 years
+last_5_years <- tail(CPI_USA_filtered, 5)
+GDP_filtered_last_5_years <-tail(GDP_filtered,5)
+
+# Fit the Partial Adjustment Model
+partial_adjustment_model <- lm(Growth_Rate ~ Gamma + Gamma * GDP_filtered_last_5_years$Growth_Rate + Gamma * last_5_years$Growth_Rate_Lag - Gamma, data = last_5_years)
+
+# Generate 1-step ahead forecasts for the last 5 years
+partial_adjustment_inflation_forecasts <- predict(partial_adjustment_model, newdata = last_5_years)
+
+# Print the 1-step ahead forecasts
+cat("1-Step Ahead Forecast for Inflation Growth Rate (Last 5 years):\n")
+print(partial_adjustment_inflation_forecasts)
+
+#AR(1)
+
+# Fit the AR(1) model
+ar_model <- ar(CPI_USA_filtered$Growth_Rate, order = 1)
+
+# Extract the AR(1) coefficient
+ar_coeff <- ar_model$ar
+
+# Get the last observation of the inflation growth rate
+last_observation <- tail(CPI_USA_filtered$Growth_Rate, 1)
+
+# Generate 1-step ahead forecasts for the last 5 years
+ar_inflation_forecasts <- numeric(5)
+for (i in 1:5) {
+  ar_inflation_forecasts[i] <- ar_coeff * last_observation
+  last_observation <- ar_inflation_forecasts[i]
+}
+
+# Print the 1-step ahead forecasts
+cat("1-Step Ahead Forecasts for Inflation Growth Rate (AR(1)):\n")
+print(ar_inflation_forecasts)
+
+# Evaluate the forecasts
+
+# Extract the actual values for the last 5 years of the sample
+actual_inflation <- CPI_USA_filtered$Growth_Rate[(nrow(CPI_USA_filtered) - 4):nrow(CPI_USA_filtered)]
+actual_gdp <- CPI_USA_filtered$GDP_Growth[(nrow(CPI_USA_filtered) - 4):nrow(CPI_USA_filtered)]
+
+# Calculate the forecast errors for the VAR model
+var_inflation_errors <- actual_inflation - var_inflation_forecast
+var_gdp_errors <- actual_gdp - var_gdp_forecast
+
+# Calculate the forecast errors for the Partial Adjustment Model
+partial_adjustment_inflation_errors <- actual_inflation - partial_adjustment_inflation_forecasts
+
+# Calculate the forecast errors for the AR(1) model
+ar_inflation_errors <- actual_inflation - ar_inflation_forecasts
+
+# Calculate the mean absolute error (MAE) for each model
+var_mae <- mean(abs(var_inflation_errors))
+partial_adjustment_mae <- mean(abs(partial_adjustment_inflation_errors))
+ar_mae <- mean(abs(ar_inflation_errors))
+
+# Print the MAE for each model
+cat("VAR Model MAE:", var_mae, "\n")
+cat("Partial Adjustment Model MAE:", partial_adjustment_mae, "\n")
+cat("AR(1) Model MAE:", ar_mae, "\n")
+
+install.packages("forecast")
+library(forecast)
+
+# Apply Diebold-Mariano test
+dm_test_result_1<- dm.test(var_inflation_errors, ar_inflation_errors)
+dm_test_result_2<- dm.test(var_inflation_errors, partial_adjustment_inflation_errors)
+dm_test_result_3<- dm.test(partial_adjustment_inflation_errors, ar_inflation_errors)
+
+# Print the test result
+cat("Diebold-Mariano Test p-value:", dm_test_result_1$p.value, "\n")
+cat("Diebold-Mariano Test p-value:", dm_test_result_2$p.value, "\n")
+cat("Diebold-Mariano Test p-value:", dm_test_result_3$p.value, "\n")
+```
