@@ -1,0 +1,472 @@
+---
+title: "**Activision/Microsoft Merger Probability through Option Pricing**"
+output:
+  pdf_document:
+    latex_engine: xelatex
+author: "M.A. Normanno"
+date: "June 2023"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, fig.align = 'center',out.width='75%')
+library(depmixS4)
+library(ggplot2)
+library(tidyverse)
+library(readr)
+library(scales)
+library(lubridate)
+library(tseries)
+library(magrittr)
+library(dlm)
+library(stringr)
+library(dplyr)
+library(kableExtra)
+library(gtable)
+library(strucchange)
+library(ggrepel)
+library(sf)
+library(gridExtra)
+library(quantmod)
+library(zoo)
+library(forecast)
+```
+
+## 1. Introduction
+
+The joint information in $target \ stock$ and $option \ prices$ is more informative about $deal \ outcomes$ compared to the isolated information in target stock prices. This can be understood by considering the dynamics that occur when a $cash \ deal$ is announced.
+
+During the announcement, the jump in the target stock price and the arbitrage spread provide direct information about the likelihood of the deal's success. After the announcement, the target stock price becomes a combination of the cash offer and the fundamental value of target dividends. This results in a shift of weight in the target stock price from dividends to cash, reducing the volatility of the stock price due to cash having zero volatility.
+
+However, there is a risk that the deal may fail even after the announcement. In such cases, the target stock price will regress back to a level closer to the pre-announcement price, leading to an increase in the skewness and kurtosis of the stock price.
+
+On the other hand, target option prices capture the changes in the higher moments of the target stock price immediately following the announcement. In situations where markets are incomplete, target stock prices do not provide the same level of information. Specifically, a decrease in at-the-money implied volatility and the emergence of a volatility smile contain predictive content for deal outcomes. As the weight on cash increases with the probability of deal success, deals with a higher probability of success exhibit a more significant decrease in implied volatility and an increased skewness.
+
+In summary, target option prices offer insights into the changing dynamics and risk characteristics of the target stock price following a deal announcement, providing valuable information about the probability and potential outcomes of the deal that may not be fully captured by the target stock prices alone.
+
+Taking into consideration the acquisition of Activision Blizzard by Microsoft, we proceed in modeling the implied market probability of deal success making use of call options. The data set collects data for the period October 2021 (from the 20th, 90 days before the deal announcement, i.e., on the 18th of January 2022) to April 2023 (to 6th, the day set as the level of the investment recommendation). We do have 367 observations to make inference on.
+
+\newpage
+
+## 2. First Approach: HMM and Spread among Prices
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='50%', fig.align="center"}
+
+# We import the data
+data_ATVI_ <- read.csv("ATVI.csv")
+attach(data_ATVI_)
+
+data_Bond_ <- read.csv("^FVX.csv")
+data_Bond_[data_Bond_ == "null"] <- NA
+attach(data_Bond_)
+
+# We create smaller datasets
+
+stock_pre <- ts(data_ATVI_$Close)
+stock_data_pre <- data.frame(time_index=(time(stock_pre)),stock_price_pre=stock_pre) 
+stock_data_pre <- stock_data_pre %>% filter(time_index<= 61) # I am creating a subset for the pre-announcement data
+
+stock <- ts(data_ATVI_$Close)
+stock_data <- data.frame(time_index=(time(stock)),stock_price=stock)
+stock_data <- stock_data %>% filter(time_index>= 62) # I am creating a subset for the post-announcement data
+
+stock_data_2 <- data.frame(time_index=(time(stock_data$stock_price)),stock_data$stock_price) # I am creating a subset for the post-announcement data corrected for the new time index
+stock <- ts(stock_data_2$stock_data.stock_price)
+
+merged_stock <- data.frame(data_ATVI_$Date, time_index=(time(ts(data_ATVI_$Close))),Close=ts(data_ATVI_$Close))
+merged_stock <- merged_stock %>% mutate(Deal = ifelse(merged_stock$data_ATVI_.Date >= as.Date("2022-01-18"), "Post-Announcement", "Pre-Announcement"))
+merged_stock <- merged_stock %>% mutate(data_ATVI_.Date = as.numeric(as.Date(data_ATVI_.Date, origin = "1970-01-01")))
+merged_stock <- merged_stock %>% mutate(spread = log( 95 - Close))
+merged_stock <- merged_stock %>% mutate(log_returns = c(NA, log(Close[-1]/Close[-length(Close)])*100))
+merged_stock$data_ATVI_.Date<- as.Date(merged_stock$data_ATVI_.Date)
+merged_stock$rolling_variance <- rollapply(merged_stock$log_returns, width = 5, FUN = var, align = "right", fill = NA)
+merged_stock$volatility <- sqrt(merged_stock$rolling_variance)
+
+# Filter the merged_stock dataset for post-announcement data
+merged_stock_post <- merged_stock[merged_stock$Deal == "Post-Announcement", ]
+
+data_Bond_$Close <- as.numeric(data_Bond_$Close)
+data_Bond_$Close <- data_Bond_$Close / 100
+bond <- ts(data_Bond_$Close)
+bond2 <- na.remove(bond)
+bond_data <- data.frame(time_index=(time(merged_stock$Close)),bond_yield=bond2)
+
+# We create the data frame as object of ggplot
+
+ggplot(merged_stock, aes(x=as.Date(merged_stock$data_ATVI_.Date,origin = "1970-01-01"), y= merged_stock$Close, color= factor(Deal))) + theme_bw() + geom_line(aes(y=merged_stock$Close)) + xlab("Time") + ylab("ATVI Stock Price")+ scale_y_continuous(labels=scales::comma) + ggtitle("Daily ATVI Prices 20/10/2021 - 16/06/2023") + theme(plot.title=element_text(hjust=0.5)) + labs(color = "Merger Deal") + scale_color_manual(values = c("blue", "red"))  + geom_hline(yintercept=95, color="darkred") + 
+  annotate(geom="text", x=as.Date("2022-01-25"), y=97, label="Offered Price", color="darkred") + theme_classic()
+```
+
+Looking at the graph it is possible to easily infer that we have some very short periods of high peaks and longer periods of falling prices, and that there are some structural breaks that lead to new temporal equilibrium in the levels of $ATVI \ stock \ price$.
+
+Givene these many change points, we proceed by employing a Hidden Markov Model. As mentioned previously, the rationale is the following: a deal announcement often introduces a level of uncertainty and potential changes in the underlying dynamics of the stock price. HMMs allow you to model these hidden states, representing different market regimes or conditions. By explicitly capturing these hidden states, HMMs can provide a more accurate representation of the stock price behavior after the announcement.
+
+Specifically, we may assume that the time series contains possibly three different levels; then, the process $(S_{t})_{t\geq0}$ is a homogeneous Markov Chain with 3 states representing the $\textit{Low Likelihood}$, the $\textit{Moderate Likelihood}$, and a $\textit{High Likelihood}$ path, and Gaussian emission distributions with state-dependent mean and variance. Moreover, conditionally on $(S_{t})_{t\geq0}$, $\text{PM}_{2.5}$ level's are independent and the conditional distribution only depends on the hidden state only through the state-dependent means and standard deviations.
+
+Here, once identified the lowest mean (i.e., the Low Likelihood State), we can consider it as the drop price in case of merger failure and compute the implied merger probability as:
+
+$$
+\begin{aligned}
+Implied \ Market \ Probability \ of \ Deal \ Success &= 1 - \frac{Offered \ Price \ -\ Current \ Stock \ Price}{Offered \ Price \ - \ Low \ Likelihood \ State \ Mean}\\
+\end{aligned}
+$$
+
+The Hidden Markov Model is defined as:
+
+$$ Y_{t} = \mu_{n} + \epsilon_{t}, \quad \epsilon_{t} \overset{iid}{\sim} N(0, \sigma_{n}^{2}) \quad \text{if the state} \ S_{t}=n, \text{with} \ n \in \mathcal{S}= (1,2,3) $$
+Going on, proceeding with the estimation, we firstly observe that the unknown parameters of a continuous Hidden Markov Model are $\phi$=$(\pi,A,\Theta)$ where $\pi$ is the distribution of the first hidden state of the process ($S_0$), $A$ is the matrix of transition probabilities from state $\textit{i}$ state $\textit{j}$ ($p_{ij}$) and $\Theta$ is the set of possible parameters that can determine the the distributions of the observable variable $\textit{Y}$ given the state $\textit{j}$ ($\theta_{j}$).
+
+```{r echo = FALSE, warning= FALSE, include= FALSE}
+model<- depmix(merged_stock$Close ~1, data=data.frame(merged_stock), nstates=3, family=gaussian())
+fmodel <- fit(model)
+states_mu_sigma <- summary(fmodel)
+state1 <- fmodel@response[[1]][[1]]@parameters
+state2 <- fmodel@response[[2]][[1]]@parameters
+state3 <- fmodel@response[[3]][[1]]@parameters
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='50%', fig.align="center"}
+# Building the Emission Matrix with Standard Errors
+estStates <- posterior(fmodel)
+MLEse <- standardError(fmodel)
+MLEs <- round(MLEse$par[13:18], 3)
+StdErr <- round(MLEse$se[13:18], 3)
+data.frame.2 <- data.frame(MLEs, StdErr)
+estimates <- matrix(data = c(MLEs, StdErr), ncol = 2)
+tab <- as.data.frame(estimates)
+rownames(tab) <- c("$\\mu_1$", "$\\sigma_1$","$\\mu_2$", "$\\sigma_2$","$\\mu_3$", "$\\sigma_3$")
+colnames(tab) <- c("Estimate", "Standard Error")
+
+final_df <- as.data.frame(t(data.frame.2))
+colnames(final_df) <- c("$\\mu_1$", "$\\sigma_1$","$\\mu_3$", "$\\sigma_3$","$\\mu_2$", "$\\sigma_2$")
+rownames(final_df) <- c("Estimate", "Standard Error")
+
+final_df <- final_df[, c(1,2,5,6,3,4)]
+
+kbl(final_df, format = 'latex', escape = FALSE, caption = "MLEs and associated standard errors") %>%
+  kable_classic() %>%
+  add_header_above(c(" ", "Low" = 2, "Medium" = 2, "High" = 2))%>%
+  kable_styling(latex_options = "hold_position")
+```
+
+We estimate the unknown parameters of a HMM by maximum likelihood. We proceed by fitting the model and computing the MLEs of the unknown parameters $\hat\phi$$=$$(\hat \pi, \hat A,\hat \Theta)$. We report the results obtained for $\hat A$,$\hat \Theta$.
+
+From the estimates, we can see that there are 3 states, corresponding to different average levels of the $ATVI \ stock \ prices$. In particular, we can identify a low likelihood with an average of 63.489, a moderate likelihood with an average of 76.313, and a high likelihood with an average of 79.875. It is useful to note that the former level is characterized by a far higher volatility compared to the other two.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='50%', fig.align="center"}
+# Building the Transition Matrix
+row1 <- unlist(fmodel@transition[[1]]@parameters)
+row3 <- unlist(fmodel@transition[[2]]@parameters)
+row2 <- unlist(fmodel@transition[[3]]@parameters)
+
+ordrow <- c(1,3,2)
+row3<- row3[ordrow]
+row2 <- row2[ordrow]
+
+transition_m <- matrix(c((row1), (row2), (row3)), ncol=3, byrow = T)
+transition_tab <- as.data.frame(transition_m)
+rownames(transition_tab) <- c("From Low", "From Medium", "From High")
+colnames(transition_tab) <- c("To Low", "To Medium", "To High")
+kable(transition_tab, digits = 5, caption = "Transition matrix", align = "ccrr")%>%
+  kable_styling(latex_options = "hold_position")
+```
+
+Moreover, we report the time-invariant transition matrix of the homogeneous Hidden Markov model. In particular, we are interested in understanding how long a level is likely to stay and how likely it is to go back to the low likelihood levels levels. It collects the probabilities of the system moving from one state to another between time (t) and (t + 1) – notice that the data are days by days.
+
+Based on the transition matrix, we observe that the states tend to be very persistent. For instance, considering the "High Likelihood" state (representing the convergence level to the offered price), we can see that after 1 day, the probability of remaining in this state is approximately 92.063%. This indicates a high likelihood of staying in the high likelihood state over time.
+
+Furthermore, if we are interested in the expected number of days it takes to return to the low likelihood level from the high one state, we can consider two possible routes. Firstly, there is a direct route with a probability of 0.15%. Alternatively, we can transition to the moderate likelihood level first, which has a probability of 3.6% and then transition from the moderate likelihood level to the low level with a probability of 5%.
+
+Overall, the expected average number of days we need to stay in the high-moderate likelihood level before returning to the low state is approximately 2 days. This information provides insights into the dynamics and behavior of the system, allowing us to assess the duration and probabilities of transitioning between different levels of likelihood.
+
+As a final step, we can then decode the time series by finding the optimal state sequence associated with the the observed sequence of $ATVI \ stock \ price$ levels.
+
+The following chart represents the estimated path of of the state variable estimated so to maximize the following conditional probability. We add also the 95% confidence interval in order to qualitatively assess the fit of our model.
+
+\begin{equation*}
+\max _{s_{1: T}} P\left(S_{1}=s_{1}, \ldots, S_{T}=s_{T} \mid Y_{1}=y_{1}, \ldots, Y_{T}=y_{T}, \phi\right)
+\end{equation*}
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='60%',fig.cap= "Path of the States", fig.align="center"}
+estStates <- posterior(fmodel)
+
+estStates_ts <-ts(estStates[,1])
+estStates_data_frame <- data.frame(time_index=(time(estStates_ts)), post_state=estStates_ts) %>% gather("variable", "value",-time_index)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='50%',fig.cap= "ATVI Stock Prices, hidden state sequence, standard deviations, log scale on y axis", fig.align="center"}
+
+par_coeff_state_1 <- fmodel@response[[1]][[1]]@parameters$coefficients
+par_sd_state_1 <- fmodel@response[[1]][[1]]@parameters$sd
+
+par_coeff_state_2 <- fmodel@response[[2]][[1]]@parameters$coefficients
+par_sd_state_2 <- fmodel@response[[2]][[1]]@parameters$sd
+
+par_coeff_state_3 <- fmodel@response[[3]][[1]]@parameters$coefficients
+par_sd_state_3 <- fmodel@response[[3]][[1]]@parameters$sd
+
+Means=rep(par_coeff_state_1, length(merged_stock$Close))
+Means[estStates[,1]==2] = par_coeff_state_2
+Means[estStates[,1]==3] = par_coeff_state_3
+
+sigma_means = rep(par_sd_state_1, length(merged_stock$Close))
+sigma_means[estStates[,1]==2] = par_sd_state_2
+sigma_means[estStates[,1]==3] = par_sd_state_3
+
+merged_stock$means <- Means
+merged_stock$sd <- sigma_means
+
+ggplot(data.frame(merged_stock), aes(as.Date(merged_stock$data_ATVI_.Date),merged_stock$Close)) + geom_line() + geom_point(aes(y=Means),color="blue", size=.3)+ xlab("Time")+ylab("ATVI Prices")+ labs(title = "Actual ATVI Prices and HMM Estimated means") + theme(axis.title.y = element_text(hjust = 0.5, vjust = 3.5,face = "bold")) +theme(axis.title.x = element_text(face = "bold"))+  theme_classic() +  geom_ribbon(aes(ymin = Means-2*sigma_means, ymax = Means+2*sigma_means), alpha=.1,fill = 'green') + scale_y_log10() + geom_hline(yintercept = 95, colour = 'darkred') + 
+  annotate(geom="text", x=as.Date("2022-01-25"), y=97, label="Offered Price", color="darkred") + theme_classic()
+```
+
+According to the theory, the expectation is that the spread will converge to zero in the case of successful completion of merger. Alternately, we expect it blow up or widen in case the merger does not go through.
+
+Also, the key value in the theory relates to the logarithm of the spread. If the logarithm of the spread goes down in a linear fashion, then the spread goes down in an exponential fashion. As a matter of fact, in the case of mergers with no glitches along the way, it is not unreasonable to expect the logarithm of the spread to decrease in a linear fashion. We could therefore expect the spread to exponentially approach zero as the merger date nears.
+
+```{r, echo=FALSE,results='hide',message=FALSE, warning=FALSE, out.width='50%',fig.cap= "Logarithm of the Spread between ATVI Stock Price and Offered Price, HMM 1-step-ahead forecasts, standard deviations, log scale on y axis", fig.align="center"} 
+
+# Filter out rows with missing values in the spread column
+merged_stock_post <- merged_stock_post[!is.na(merged_stock_post$spread), ]
+
+# Create the HMM model with 3 states
+hmm_model <- depmix(spread ~ 1, data = merged_stock_post, nstates = 3)
+
+# Estimate the model parameters
+hmm_fit <- fit(hmm_model)
+
+# Compute 1-step-ahead forecasts
+hmm_state_probs <- posterior(hmm_fit)
+hmm_forecast <- hmm_state_probs[-1, "S1"] * hmm_fit@response[[1]][[1]]@parameters$coefficients +
+  hmm_state_probs[-1, "S2"] * hmm_fit@response[[2]][[1]]@parameters$coefficients +
+  hmm_state_probs[-1, "S3"] * hmm_fit@response[[3]][[1]]@parameters$coefficients
+
+# Add the forecasts to the merged_stock dataset
+merged_stock_post$forecast <- c(NA, hmm_forecast)
+
+# Compute the spread on the low likelihood price
+
+merged_stock_post <- merged_stock_post %>% mutate(spread_low_likelihood= log( 95 - fmodel@response[[1]][[1]]@parameters$coefficients))
+
+# Compute the implied probability
+
+merged_stock_post <- merged_stock_post %>% mutate(implied_probability = 1 - merged_stock_post$spread/merged_stock_post$spread_low_likelihood)
+
+# Plot the log_spread and forecast with interpolated curve
+ggplot(merged_stock_post, aes(x = as.Date(data_ATVI_.Date, origin = "1970-01-01"))) +
+  theme_bw() +
+  geom_line(aes(y = spread), linetype = "solid") +
+  geom_line(aes(y = forecast), color = "red", linetype = "dashed") +
+  geom_smooth(aes(y = spread), method = "loess", se = FALSE, color = "blue") +  # Add interpolated curve
+  xlab("Time") +
+  ylab("Log Spread") +
+  scale_y_continuous(labels = scales::comma) +
+  ggtitle("HMM 1-Step-Ahead Forecasts of Log Spread") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values = c("blue", "red")) +
+  geom_hline(yintercept = 0, color = "darkred") +
+  annotate(geom = "text", x = as.Date("2022-06-25"), y = 0.2, label = "Convergence to the Offered Price", color = "darkred") +
+  theme_classic()
+```
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='50%',fig.cap= "Implied Probability and its interpolation based on the spread bewteen the Offered Price and the Closing Prices, and the Low Likelihood State Coefficient", fig.align="center"}
+ggplot(merged_stock_post, aes(x = as.Date(data_ATVI_.Date, origin = "1970-01-01"))) +
+  theme_bw() +
+  geom_line(aes(y = implied_probability), linetype = "solid", color = "blue") + geom_ribbon(aes(ymin = implied_probability - 2 * sqrt(var(implied_probability)), ymax = implied_probability + 2 * sqrt(var(implied_probability))), alpha = 0.1, fill = "green")+
+  geom_smooth(aes(y = implied_probability), method = "loess", se = FALSE, color = "red") +  # Add interpolated curve
+  xlab("Time") +
+  ylab("Implied Probability") +
+  scale_y_continuous(labels = scales::comma) +
+  ggtitle("Interpolation of the Implied Market Probability of the Merger") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values = c("blue", "red")) +
+  theme_classic()
+```
+As we can trivially observe from the graph, the overall implied merger probability of the Activision/Microsoft deal is below 50% based on the data. We computed the downside price through an HMM model assuming that the negative announcement/negative sentiment form the market leads to a discrete hidden state that we called "low likelihood".
+
+Yet, the use of HMM to model downside price and hidden states introduces certain assumptions and limitations. HMM assumes a discrete hidden state process and may not capture the full complexity of market behavior. Additionally, HMM requires estimating transition probabilities, emission probabilities, and initial state probabilities, which can be sensitive to model assumptions and data quality.
+
+Considering the limitations and complexities of using HMM models, an alternative approach worth considering is the use of Dynamic Linear Models (DLM). DLMs provide a flexible framework for modeling time series data and can handle various sources of uncertainty.
+
+On the other hand, the assumption of a downside price could represent a great limitation to the assessment of the Market Implied Merger Probability of the Deal. Consequently, we do use a theoretical option below to deepen other ways to assess the probability.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Compute the MSE of the HMM forecasts
+mse <- data.frame("MSE" = mean((merged_stock_post$spread[-1] - merged_stock_post$forecast[-1])^2))
+colnames(mse) <- c("Implied Probability")
+kable(mse, escape=FALSE, digits = 3, caption = "MSE - 1-step-ahead Hidden Markov Model forecasts", align = "cc")%>%kable_classic()%>%
+  kable_styling(latex_options = "hold_position")
+```
+
+Before moving to the next section, it is worth noting that the Mean Squared Error (MSE) of the forecasts generated by the Hidden Markov Model (HMM) is relatively low. The MSE is a measure of the average squared difference between the predicted values and the actual values. By estimating this value, we can compare the forecast accuracy of the HMM with that of other models, providing a basis for comparison among different modeling approaches.
+
+## 3. Option Pricing and DLM
+
+Here we deepen another approach, exploiting the information suggested by Options Pricing. In particular, we do take into consideration a theoretical call option expiring in March of 2024 (e.g., ATVI Option $95.00 Mar 15, 2024), the forecast months of closure of the deal if it goes smoothly, the historical volatility of the ATVI stock price from the day of the announcement, and calculating the risk-adjusted probabilities of the call ending up in the money (d1) and the probability of receiving the stock at expiration (d2) in the Balck and Scholes Option Pricing Model. The latter is indeed the probability of deal success by definition.
+
+We define d1 and d2 as follows:
+
+$$
+\begin{cases}
+\begin{aligned}
+d_1 &= \frac{{\log(\frac{S_t}{K}) + r + \frac{1}{2} \sigma^2(T-t)}}{\sigma(T-t)}\\
+d_2 &= d_1 - \sigma(T-t)
+\end{aligned}
+\end{cases}
+$$
+
+We already highlight that potential development of the current work are related to the estimation of the ATVI stock price volatility. In particular, we suggest using a GARCH/ARCH model to estimate the implied volatility. In the current version, we employed a rolling variance using a width of 5 days to avoid prices' spikes. Moreover, instead of making use of a theoretical option, we could indeed apply some reverse engineering to the current prices of 
+
+As mentioned above, in the previous section, we used an HMM to perform a type of retrospective analysis of the time series to obtain from our observational data the optimal state sequence, corresponding to different levels of air pollution. If instead, we are interested in online estimation and prediction with streaming data we are better off by using a Dynamic Linear Model that allows us to quantify the uncertainty of such prediction through the computation of the one-step-ahead forecasting distribution of the observations.
+
+We consider a random walk plus noise model for our multivariate model. In particular, the random walk plus noise model assumes the presence of a latent state that is distributed as a Markov Chain and, given ($\theta_{t}$), the observations are assumed to be independent such that they have the following distribution, $p(Y_{t}|\theta_{t})$. Our interest is in the one-step-ahead observation forecasting distribution, $p(Y_{t+1}|y_{1:t})$, which can be computed using the Kalman filter. This distribution will allow us not only to determine point forecast estimates but also fully model the uncertainty behind them.
+
+In order to estimate the parameters of the model we use the Maximum Likelihood method. All in all, the multivariate local level model (random walk + noise) is specified as follows:
+
+$$
+\begin{cases}
+\begin{aligned}
+Y_t &= \theta_t + v_t, \quad & v_t  \overset{indep}\sim N(\textbf{0}, V) \\
+\theta_t &= \theta_{t-1} + w_t, \quad & w_t \overset{indep}\sim N(\textbf{0}, W) 
+\end{aligned}
+\end{cases}
+$$
+
+In particular, $\theta_t$ characterizes the state equation with the assumption of $\theta_0 \sim N(m_0,C_0)$ &#x2AEB; $(v_t)$ &#x2AEB; $(w_t)$, $m_0$ is the vector with the first observation, $C_0$ is the variance, and $V$ is equal to $\sigma^2$.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='50%', fig.align="center"}
+strike_price <- 95
+expiration_date <- as.Date("2024-03-15")
+bond <- ts(data_Bond_$Close)
+bond <-data.frame(time_index=(time(data_Bond_$Close)),bond)
+bond <- bond %>% mutate(date=data_Bond_$Date)
+bond <- bond %>% filter(time_index>= 76)
+bond <-na.omit(bond)
+
+time_to_expiration <- as.numeric(expiration_date - merged_stock_post$data_ATVI_.Date) / 365  # Time to expiration in years
+bond$bond <- as.numeric(as.character(bond$bond))
+
+# Calculate d1 and d2
+d1 <- ((log(merged_stock_post$Close/ strike_price) + (bond$bond + 0.5 * merged_stock_post$volatility^2) * time_to_expiration) / (merged_stock_post$volatility * sqrt(time_to_expiration)))
+d2 <- d1 - merged_stock_post$volatility * sqrt(time_to_expiration)
+
+implied_prob <- pnorm(d2)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='50%',fig.cap= "Implied Probability and its interpolation based on the probability of receiving the stock at expiration", fig.align="center"}
+ggplot(merged_stock_post, aes(x = as.Date(data_ATVI_.Date, origin = "1970-01-01"))) +
+  theme_bw() +
+  geom_line(aes(y = implied_prob), linetype = "solid", color = "blue") +
+  geom_ribbon(aes(ymin = implied_prob - 2 * sqrt(var(implied_prob)), ymax = implied_prob + 2 * sqrt(var(implied_prob))), alpha = 0.1, fill = "green") +
+  geom_smooth(aes(y = implied_prob), method = "loess", se = FALSE, color = "red") +  # Add interpolated curve
+  xlab("Time") +
+  ylab("Implied Probability") +
+  scale_y_continuous(labels = scales::comma) +
+  ggtitle("Interpolation of the Implied Market Probability of the Merger") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values = c("blue", "red")) +
+  theme_classic()
+
+```
+We can observe that there are repeated patterns in the series, such as consecutive values being relatively close to each other or exhibiting similar trends. Moreover, the maximum probability obtained is 35%.
+
+Differently from the other series, we now observe more drops related to the change in volatility and the closing prices (notice that we are assuming as negligible the contributions from the interest rates). Analysing the greeks, the option delta (i.e, $\mathcal{N}(d_1)$)), is skewed towards values closer to 0 rather than 1, with a mean of 0.6209936. It is worth of remembering that a delta of 1 indicates that the option price will move in tandem with the underlying asset, while a delta of 0 indicates no price movement correlation. On the other hand, the vega - or, more correctly, the sensitivity to the volatility, since vega measures the sensitivity of the option price to the implied volatility, here not computed - may exhibit some repeating patterns, although it is challenging to identify specific patterns without further analysis or more data points. This may suggest exploring a model based on a latent process, as the random walk plus noise.
+
+Below we report the estimated parameters with the associated standard errors. The resulting matrices are:
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE, out.width='50%', fig.align="center"}
+
+StructTS(pnorm(d2))
+# Estimate parameters via MLE
+ build <- function(param){
+mod=dlmModPoly(1)
+mod$V=param[1]
+mod$W=param[2]
+mod$m0=d2[1]
+mod$C0=diag(1)*10000
+return(mod)}
+
+dlm_est <- dlmMLE(pnorm(d2),rep(1,2), build, hessian=T)
+
+# Retrieving the SEs
+avarLog <- solve(dlm_est$hessian)
+avar <- diag(exp(dlm_est$par)) %*% avarLog %*% diag(exp(dlm_est$par)) #Delta method
+se <- sqrt(diag(avar)) #estimated SEs
+
+# Our specified model
+finalmod <- build(dlm_est$par)
+```
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width='50%', fig.align="center"}
+#table reporting estimated parameters with associated se
+est_para=data.frame(t(matrix(c(exp(dlm_est$par),se), ncol=2)))
+colnames(est_para) <- c("$\\sigma^2_{v}$","$\\sigma^2_w$")
+rownames(est_para) <- c("Estimate", "Standard Error")
+kable(est_para, escape=FALSE, digits = 5, caption = "Estimated parameters", align = "cc")%>%kable_classic()%>%
+  kable_styling(latex_options = "hold_position")
+```
+With the estimated model, we can also compute one-step ahead forecasts with the associated probability intervals.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE,fig.cap="One-step-ahead predictions in Implied Probability",out.width='50%'}
+#building the model
+
+newdf_ <- as.matrix(pnorm(d2))
+modFilt <- dlmFilter(newdf_, finalmod)
+
+#create data frame with the forecasts
+modFilt_df <- as.data.frame(modFilt$f)
+
+# create data frame with both the forecasts and the original values
+dffinal <- cbind(implied_prob, modFilt_df,merged_stock_post$data_ATVI_.Date)
+dffinal <- dffinal[2:nrow(dffinal), ]
+
+# make a graph of the one step ahead forecasts
+
+colors <- c("Observed" = "black", "One-Step Ahead Forecast" = "red")
+
+ggplot(dffinal,aes(x=as.Date(dffinal$`merged_stock_post$data_ATVI_.Date`, origin = "1970-01-01"))) + geom_line(aes(y=implied_prob, color = "Observed")) + 
+  geom_line(aes(y=dffinal$V1, color="One-Step Ahead Forecast")) + theme_classic()+labs(x="", 
+       y="Implied Probability of Successful Merger", color = " ") +
+  scale_color_manual(values = colors)+ theme(legend.position = c(0.1, 0.3), legend.justification = c(0, 1)) + geom_ribbon(aes(ymin = dffinal$V1-2*se[2], ymax = dffinal$V1+2*se[2]), alpha=.1)
+```
+\newpage
+Contrarily to the previous model, we can now make predictions not on states but on actual levels, which gives much more precise results. We then compute the MSE again, showing lower values.
+```{r}
+forecast_df <- data.frame("MSE" = mean((dffinal$V1-dffinal$implied_prob)^2)) 
+colnames(forecast_df) <- c("Implied Probability")
+kable(forecast_df, escape=FALSE, digits = 3, caption = "MSE for the DLM forecasts", align = "cc")%>%kable_classic()%>%
+  kable_styling(latex_options = "hold_position")
+```
+
+## 4. Conclusions
+```{r,echo=FALSE, message=FALSE, warning=FALSE,out.width='50%'}
+merged_probability <- data.frame(merged_stock_post$data_ATVI_.Date,merged_stock_post$implied_probability,implied_prob)
+ggplot(merged_probability, aes(x = as.Date(merged_probability$merged_stock_post.data_ATVI_.Date, origin = "1970-01-01"))) +
+  theme_bw() +
+  geom_line(aes(y = merged_probability$merged_stock_post.implied_probability), linetype = "solid", color="blue") +
+  geom_line(aes(y = merged_probability$implied_prob),linetype = "dashed", color="red" ) +
+  xlab("Time") +
+  ylab("Implied Probability") +
+  scale_y_continuous(labels = scales::comma) +
+  ggtitle("Implied Market Probability of the Merger of the 2 Approaches") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values = c("blue", "red")) +
+  theme_classic()
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Extract the relevant columns and rename them
+data <- data.frame(Date = merged_stock_post$data_ATVI_.Date[-1],
+                   Series1 = dffinal$V1,
+                   Series2 = merged_stock_post$forecast[-1])
+
+# Convert Date column to Date format
+data$Date <- as.Date(data$Date, origin = "1970-01-01")
+
+# Perform Diebold-Mariano test
+dm_test <- dm.test(data$Series1, data$Series2, alternative = "two.sided")
+```
+
+We do perform a Diebold-Mariano test to interpret any significant difference in the forecasts of these two series. As a matter of fact, the p-value is less than 1%, indicating that the difference between the two series is highly statistically significant. 
+
+Nevertheless, we can observe that both approaches (stock and option market) suggest that the implied market probability of deal's success is lower than 50%, implying a sentiment of failure of the merger. Although further analyses are required to come up with a final conclusion, we can try to interpret such evidences.
+
+Indeed Antitrust Authorities play a significant role given the block due to concerns regards fair competition in the cloud games and high performance consoles markets. Another interpretation could be the following one: existing literature shows that mega-M&A deals valued over $500mil end up destroying the shareholder value of acquirers on a significant scale. Several explanations have been provided in the literature, including the overpayment hypothesis (Loderer and Martin, 1990), the hubris hypothesis (Roll, 1986), the empire building hypothesis (Grinstein and Hribar, 2004), and the integration complexity hypothesis (Alexandridis et al., 2013).
