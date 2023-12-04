@@ -306,12 +306,14 @@ Here we deepen another approach, exploiting the information suggested by Options
 We define d1 and d2 as follows:
 
 $$
+{% raw %}
 \begin{cases}
 \begin{aligned}
 d_1 &= \frac{{\log(\frac{S_t}{K}) + r + \frac{1}{2} \sigma^2(T-t)}}{\sigma(T-t)}\\
 d_2 &= d_1 - \sigma(T-t)
 \end{aligned}
 \end{cases}
+{% endraw %}
 $$
 
 We already highlight that potential development of the current work are related to the estimation of the ATVI stock price volatility. In particular, we suggest using a GARCH/ARCH model to estimate the implied volatility. In the current version, we employed a rolling variance using a width of 5 days to avoid prices' spikes. Moreover, instead of making use of a theoretical option, we could indeed apply some reverse engineering to the current prices of 
